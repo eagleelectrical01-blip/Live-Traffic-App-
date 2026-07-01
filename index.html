@@ -54,6 +54,10 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 
 .dash{position:absolute;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 12px);
   z-index:600;display:flex;flex-direction:column;gap:10px}
+.drivebtn{border:0;border-radius:16px;padding:16px;font-size:17px;font-weight:800;cursor:pointer;
+  background:var(--good);color:#06121f;box-shadow:0 12px 30px rgba(0,0,0,.45);letter-spacing:.3px}
+.drivebtn:active{transform:scale(.98)}
+.drivebtn.on{background:var(--heavy);color:#fff}
 .rad{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
   border-radius:16px;padding:12px 14px;box-shadow:0 12px 30px rgba(0,0,0,.45);backdrop-filter:blur(8px)}
 .rad-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
@@ -74,12 +78,12 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
   border:1px solid var(--line);background:var(--panel);color:var(--txt);font-size:22px;
   display:grid;place-items:center;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.5)}
 .fab:active{transform:scale(.94)}
-.fab.loc{bottom:calc(env(safe-area-inset-bottom) + 150px)}
+.fab.loc{bottom:calc(env(safe-area-inset-bottom) + 220px)}
 .fab.gear{top:calc(env(safe-area-inset-top) + 14px);right:14px}
-.fab.clear{bottom:calc(env(safe-area-inset-bottom) + 210px);font-size:18px;display:none}
+.fab.clear{bottom:calc(env(safe-area-inset-bottom) + 280px);font-size:18px;display:none}
 .fab.clear.show{display:grid}
 
-.toggles{position:absolute;left:14px;z-index:600;bottom:calc(env(safe-area-inset-bottom) + 150px);
+.toggles{position:absolute;left:14px;z-index:600;bottom:calc(env(safe-area-inset-bottom) + 220px);
   display:flex;flex-direction:column;gap:8px}
 .chip{border:1px solid var(--line);background:var(--panel);color:var(--mut);font-size:12px;
   font-weight:600;padding:9px 12px;border-radius:999px;cursor:pointer}
@@ -102,7 +106,7 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
 .btn{flex:1;border:0;border-radius:12px;padding:14px;font-size:15px;font-weight:700;cursor:pointer}
 .btn.primary{background:var(--accent);color:#06121f}
 .btn.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
-.toast{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 290px);
+.toast{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 360px);
   z-index:700;background:#1b2740;border:1px solid var(--line);color:var(--txt);font-size:13px;
   padding:10px 16px;border-radius:999px;opacity:0;transition:opacity .25s;pointer-events:none}
 .toast.show{opacity:1}
@@ -138,6 +142,7 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
 </div>
 
 <div class="dash">
+  <button class="drivebtn" id="driveBtn" style="display:none">Start drive</button>
   <div class="rad">
     <div class="rad-top"><span>Radius around me</span><b id="radVal">5 km</b></div>
     <input type="range" id="radius" min="1" max="25" value="5" step="1">
@@ -171,10 +176,11 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
 const KEY_STORE="tomtom_key";
 let KEY=localStorage.getItem(KEY_STORE)||"";
 let me=null, meMarker=null, accCircle=null, radCircle=null;
-let destMarker=null, dest=null, routeLayers=[], flowLayer=null, showAlt=false, flowOn=true;
+let destMarker=null, dest=null, destName="", routeLayers=[], flowLayer=null, showAlt=false, flowOn=true;
 let firstFix=true, routeReq=0;
 let lastRouteAt=0, lastRoutePos=null, firstRouteFit=true;
-let incOn=false, incLayer=null, incReq=0, incT=null, wakeLock=null;
+let incOn=false, incLayer=null, incReq=0, wakeLock=null;
+let driving=false, following=false, heading=0, driveZoom=16;
 
 const map=L.map("map",{zoomControl:false,attributionControl:false}).setView([-29.85,31.02],12);
 let baseLayer;
@@ -199,6 +205,9 @@ function toast(m){const t=document.getElementById("toast");t.textContent=m;t.cla
 
 function meIcon(){return L.divIcon({className:"",iconSize:[22,22],
   html:'<div style="width:18px;height:18px;border-radius:50%;background:#38BDF8;border:3px solid #fff;box-shadow:0 0 0 6px rgba(56,189,248,.25)"></div>'});}
+function carIcon(hdg){return L.divIcon({className:"",iconSize:[36,36],
+  html:`<div style="width:36px;height:36px;display:grid;place-items:center;transform:rotate(${hdg}deg)">
+    <div style="width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-bottom:28px solid #38BDF8;filter:drop-shadow(0 1px 3px rgba(0,0,0,.7))"></div></div>`});}
 function destIcon(){return L.divIcon({className:"",iconSize:[30,30],
   html:'<div style="width:14px;height:14px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#fff;border:3px solid #38BDF8;margin:4px"></div>'});}
 
@@ -222,30 +231,40 @@ function maybeRecalc(){
 
 navigator.geolocation.watchPosition(p=>{
   me=[p.coords.latitude,p.coords.longitude];
-  if(meMarker) meMarker.setLatLng(me); else meMarker=L.marker(me,{icon:meIcon(),zIndexOffset:1000}).addTo(map);
+  if(p.coords.heading!=null && !isNaN(p.coords.heading) && p.coords.speed>0.5) heading=p.coords.heading;
+  const icon = driving ? carIcon(heading) : meIcon();
+  if(meMarker) meMarker.setLatLng(me).setIcon(icon); else meMarker=L.marker(me,{icon:icon,zIndexOffset:1000}).addTo(map);
   const acc=p.coords.accuracy||30;
   if(accCircle) accCircle.setLatLng(me).setRadius(acc);
   else accCircle=L.circle(me,{radius:acc,color:"#38BDF8",weight:0,fillColor:"#38BDF8",fillOpacity:.08}).addTo(map);
   setRadius(+document.getElementById("radius").value);
   if(firstFix){firstFix=false;map.setView(me,14);}
+  if(driving && following) map.panTo(me,{animate:true,duration:.6});
   if(dest) maybeRecalc();
 },err=>toast("Location blocked — enable GPS"),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
 
 document.getElementById("radius").addEventListener("input",e=>setRadius(+e.target.value));
-document.getElementById("recenter").onclick=()=>{if(me)map.setView(me,15);else toast("Waiting for GPS…");};
+document.getElementById("recenter").onclick=()=>{
+  if(!me){toast("Waiting for GPS…");return;}
+  if(driving){following=true;map.setView(me,driveZoom,{animate:true});}
+  else map.setView(me,15);
+};
 
 map.on("click",e=>setDest([e.latlng.lat,e.latlng.lng],"Dropped pin"));
+map.on("dragstart",()=>{ if(driving) following=false; });
 
 function setDest(ll,label){
-  dest=ll;
+  dest=ll;destName=label||"destination";
   if(destMarker) destMarker.setLatLng(ll); else destMarker=L.marker(ll,{icon:destIcon()}).addTo(map);
   document.getElementById("destLabel").style.display="block";
-  document.getElementById("destLabel").textContent=label||"Destination";
+  document.getElementById("destLabel").textContent=destName;
   document.getElementById("clearBtn").classList.add("show");
+  document.getElementById("driveBtn").style.display="block";
   firstRouteFit=true;recalc();
 }
 
 function clearRoute(){
+  if(driving)stopDrive();
   dest=null;
   routeLayers.forEach(l=>map.removeLayer(l));routeLayers=[];
   if(destMarker){map.removeLayer(destMarker);destMarker=null;}
@@ -253,8 +272,25 @@ function clearRoute(){
   document.getElementById("destLabel").style.display="none";
   document.getElementById("idleMsg").style.display="block";
   document.getElementById("clearBtn").classList.remove("show");
+  document.getElementById("driveBtn").style.display="none";
 }
 document.getElementById("clearBtn").onclick=clearRoute;
+
+const driveBtn=document.getElementById("driveBtn");
+function startDrive(){
+  if(!dest||!me){toast("Set a destination first");return;}
+  driving=true;following=true;
+  driveBtn.textContent="End drive";driveBtn.classList.add("on");
+  reqWake();
+  map.setView(me,driveZoom,{animate:true});
+  recalc();
+}
+function stopDrive(){
+  driving=false;following=false;
+  driveBtn.textContent="Start drive";driveBtn.classList.remove("on");
+  if(meMarker)meMarker.setIcon(meIcon());
+}
+driveBtn.onclick=()=>driving?stopDrive():startDrive();
 
 const delayColor=m=>m>=4?"#991B1B":m>=3?"#EF4444":m>=2?"#F5A623":"#22C55E";
 
@@ -286,10 +322,12 @@ async function recalc(){
       const pill=document.getElementById("delayPill");
       if(delay>=60){pill.className="delay bad";pill.textContent="+"+Math.round(delay/60)+" min traffic";}
       else{pill.className="delay ok";pill.textContent="clear";}
+      const km=(rt.summary.lengthInMeters/1000).toFixed(1);
+      document.getElementById("destLabel").textContent = driving ? (km+" km to "+destName) : destName;
     });
     if(id!==routeReq){nl.forEach(l=>map.removeLayer(l));return;}
     routeLayers.forEach(l=>map.removeLayer(l));routeLayers=nl;
-    if(firstRouteFit){firstRouteFit=false;
+    if(firstRouteFit && !driving){firstRouteFit=false;
       const all=routeLayers.filter(l=>l.getBounds);
       if(all.length)map.fitBounds(L.featureGroup(all).getBounds().pad(.18));}
   }catch(e){toast("Network error");}
