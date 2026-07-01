@@ -169,6 +169,7 @@ let KEY=localStorage.getItem(KEY_STORE)||"";
 let me=null, meMarker=null, accCircle=null, radCircle=null;
 let destMarker=null, dest=null, routeLayers=[], flowLayer=null, showAlt=false, flowOn=true;
 let firstFix=true, routeReq=0;
+let lastRouteAt=0,lastRoutePos=null,firstRouteFit=true;
 
 const map=L.map("map",{zoomControl:false,attributionControl:false}).setView([-29.85,31.02],12);
 let baseLayer, incidents=null;
@@ -208,7 +209,7 @@ navigator.geolocation.watchPosition(p=>{
   else accCircle=L.circle(me,{radius:acc,color:"#38BDF8",weight:0,fillColor:"#38BDF8",fillOpacity:.08}).addTo(map);
   setRadius(+document.getElementById("radius").value);
   if(firstFix){firstFix=false;map.setView(me,14);}
-  if(dest) recalc();
+  if(dest) maybeRecalc();
 },err=>toast("Location blocked — enable GPS"),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
 
 document.getElementById("radius").addEventListener("input",e=>setRadius(+e.target.value));
@@ -222,7 +223,7 @@ function setDest(ll,label){
   document.getElementById("destLabel").style.display="block";
   document.getElementById("destLabel").textContent=label||"Destination";
   document.getElementById("clearBtn").classList.add("show");
-  recalc();
+  firstRouteFit=true;recalc();
 }
 
 function clearRoute(){
@@ -237,12 +238,20 @@ function clearRoute(){
 document.getElementById("clearBtn").onclick=clearRoute;
 
 const delayColor=m=>m>=4?"#991B1B":m>=3?"#EF4444":m>=2?"#F5A623":"#22C55E";
+function dist(a,b){const R=6371000,dLat=(b[0]-a[0])*Math.PI/180,dLon=(b[1]-a[1])*Math.PI/180,
+  la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,
+  h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));}
+function maybeRecalc(){
+  const moved=lastRoutePos?dist(lastRoutePos,me):Infinity;
+  if(Date.now()-lastRouteAt<15000&&moved<120)return;
+  recalc();
+}
 
 async function recalc(){
   if(!me||!dest||!KEY)return;
-  const id=++routeReq;
-  routeLayers.forEach(l=>map.removeLayer(l));routeLayers=[];
-  const alt=showAlt?2:0;
+  lastRouteAt=Date.now();lastRoutePos=me;
+  const id=++routeReq,alt=showAlt?2:0;
   const url=`https://api.tomtom.com/routing/1/calculateRoute/${me[0]},${me[1]}:${dest[0]},${dest[1]}/json`
     +`?key=${encodeURIComponent(KEY)}&traffic=true&maxAlternatives=${alt}&sectionType=traffic&travelMode=car`;
   try{
@@ -250,16 +259,17 @@ async function recalc(){
     if(!r.ok){toast(r.status===403?"Key rejected — check it":"Routing error "+r.status);return;}
     const d=await r.json();
     if(id!==routeReq||!d.routes||!d.routes.length)return;
+    const nl=[];
     d.routes.forEach((rt,i)=>{
       const pts=[];rt.legs.forEach(lg=>lg.points.forEach(pt=>pts.push([pt.latitude,pt.longitude])));
-      if(i>0){routeLayers.push(L.polyline(pts,{color:"#5B6B8C",weight:5,opacity:.5}).addTo(map));return;}
-      routeLayers.push(L.polyline(pts,{color:"#22C55E",weight:7,opacity:.95}).addTo(map));
+      if(i>0){nl.push(L.polyline(pts,{color:"#5B6B8C",weight:5,opacity:.5}).addTo(map));return;}
+      nl.push(L.polyline(pts,{color:"#22C55E",weight:7,opacity:.95}).addTo(map));
       (rt.sections||[]).forEach(s=>{
         if(s.sectionType!=="TRAFFIC"||s.magnitudeOfDelay<2)return;
         const seg=pts.slice(s.startPointIndex,s.endPointIndex+1);
-        if(seg.length>1)routeLayers.push(L.polyline(seg,{color:delayColor(s.magnitudeOfDelay),weight:7,opacity:1}).addTo(map));
+        if(seg.length>1)nl.push(L.polyline(seg,{color:delayColor(s.magnitudeOfDelay),weight:7,opacity:1}).addTo(map));
       });
-      const sec=rt.summary.travelTimeInSeconds, delay=rt.summary.trafficDelayInSeconds||0;
+      const sec=rt.summary.travelTimeInSeconds,delay=rt.summary.trafficDelayInSeconds||0;
       document.getElementById("idleMsg").style.display="none";
       document.getElementById("etaRow").style.display="flex";
       document.getElementById("etaMin").textContent=Math.max(1,Math.round(sec/60));
@@ -267,10 +277,11 @@ async function recalc(){
       if(delay>=60){pill.className="delay bad";pill.textContent="+"+Math.round(delay/60)+" min traffic";}
       else{pill.className="delay ok";pill.textContent="clear";}
     });
-    if(id===routeReq){
+    if(id!==routeReq){nl.forEach(l=>map.removeLayer(l));return;}
+    routeLayers.forEach(l=>map.removeLayer(l));routeLayers=nl;
+    if(firstRouteFit){firstRouteFit=false;
       const all=routeLayers.filter(l=>l.getBounds);
-      if(all.length)map.fitBounds(L.featureGroup(all).getBounds().pad(.18));
-    }
+      if(all.length)map.fitBounds(L.featureGroup(all).getBounds().pad(.18));}
   }catch(e){toast("Network error");}
 }
 
