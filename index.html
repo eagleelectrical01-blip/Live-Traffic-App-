@@ -17,6 +17,9 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
   font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
 #map{position:absolute;inset:0;background:var(--bg)}
 .leaflet-container{background:var(--bg)}
+.leaflet-popup-content-wrapper{background:var(--panel);color:var(--txt);border:1px solid var(--line)}
+.leaflet-popup-tip{background:var(--panel)}
+.leaflet-popup-content{font-size:13px;line-height:1.4}
 
 .hud{position:absolute;top:0;left:0;right:0;z-index:600;
   padding:calc(env(safe-area-inset-top) + 10px) 12px 0;pointer-events:none}
@@ -130,6 +133,7 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
 
 <div class="toggles">
   <button class="chip on" id="tFlow">Flow</button>
+  <button class="chip" id="tInc">Incidents</button>
   <button class="chip" id="tAlt">Alt routes</button>
 </div>
 
@@ -154,7 +158,7 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
     <p>This app runs on your own TomTom key (free tier). Get one at developer.tomtom.com, then paste it below.</p>
     <label>API key</label>
     <input id="keyInput" type="text" placeholder="paste key" spellcheck="false">
-    <div class="warn">⚠ Before going live: in the TomTom dashboard, restrict this key to your own domain (e.g. your GitHub Pages URL). The key sits in the page source, so domain-locking is what stops anyone reusing it.</div>
+    <div class="warn">⚠ Before sharing this app: in the TomTom dashboard, restrict this key to your own domain (e.g. your GitHub Pages URL). The key sits in the page source, so domain-locking is what stops anyone reusing it.</div>
     <div class="row">
       <button class="btn ghost" id="keyCancel">Cancel</button>
       <button class="btn primary" id="keySave">Save</button>
@@ -169,20 +173,25 @@ let KEY=localStorage.getItem(KEY_STORE)||"";
 let me=null, meMarker=null, accCircle=null, radCircle=null;
 let destMarker=null, dest=null, routeLayers=[], flowLayer=null, showAlt=false, flowOn=true;
 let firstFix=true, routeReq=0;
-let lastRouteAt=0,lastRoutePos=null,firstRouteFit=true;
+let lastRouteAt=0, lastRoutePos=null, firstRouteFit=true;
+let incOn=false, incLayer=null, incReq=0, incT=null, wakeLock=null;
 
 const map=L.map("map",{zoomControl:false,attributionControl:false}).setView([-29.85,31.02],12);
-let baseLayer, incidents=null;
+let baseLayer;
 
 function tt(url){return url.replace("{key}",encodeURIComponent(KEY));}
+const FLOW_URL="https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key={key}";
 function buildLayers(){
   if(baseLayer) map.removeLayer(baseLayer);
   baseLayer=L.tileLayer(tt("https://api.tomtom.com/map/1/tile/basic/night/{z}/{x}/{y}.png?key={key}"),
     {maxZoom:20,detectRetina:true}).addTo(map);
   if(flowLayer) map.removeLayer(flowLayer);
-  flowLayer=L.tileLayer(tt("https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key={key}"),
-    {maxZoom:20,opacity:.95});
+  flowLayer=L.tileLayer(tt(FLOW_URL),{maxZoom:20,opacity:.95});
   if(flowOn) flowLayer.addTo(map);
+}
+function refreshFlow(){
+  if(!flowLayer||!flowOn) return;
+  flowLayer.setUrl(tt(FLOW_URL)+"&_ts="+Date.now());
 }
 
 function toast(m){const t=document.getElementById("toast");t.textContent=m;t.classList.add("show");
@@ -199,6 +208,16 @@ function setRadius(km){
   if(radCircle) radCircle.setRadius(km*1000).setLatLng(me);
   else radCircle=L.circle(me,{radius:km*1000,color:"#38BDF8",weight:1.5,
     fillColor:"#38BDF8",fillOpacity:.04,dashArray:"6 6"}).addTo(map);
+}
+
+function dist(a,b){const R=6371000,dLat=(b[0]-a[0])*Math.PI/180,dLon=(b[1]-a[1])*Math.PI/180,
+  la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,
+  h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));}
+function maybeRecalc(){
+  const moved=lastRoutePos?dist(lastRoutePos,me):Infinity;
+  if(Date.now()-lastRouteAt<15000 && moved<120) return;
+  recalc();
 }
 
 navigator.geolocation.watchPosition(p=>{
@@ -238,15 +257,6 @@ function clearRoute(){
 document.getElementById("clearBtn").onclick=clearRoute;
 
 const delayColor=m=>m>=4?"#991B1B":m>=3?"#EF4444":m>=2?"#F5A623":"#22C55E";
-function dist(a,b){const R=6371000,dLat=(b[0]-a[0])*Math.PI/180,dLon=(b[1]-a[1])*Math.PI/180,
-  la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,
-  h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
-  return 2*R*Math.asin(Math.sqrt(h));}
-function maybeRecalc(){
-  const moved=lastRoutePos?dist(lastRoutePos,me):Infinity;
-  if(Date.now()-lastRouteAt<15000&&moved<120)return;
-  recalc();
-}
 
 async function recalc(){
   if(!me||!dest||!KEY)return;
@@ -285,6 +295,47 @@ async function recalc(){
   }catch(e){toast("Network error");}
 }
 
+const INC={
+  0:["⚠️","Incident"],1:["💥","Accident"],2:["🌫️","Fog"],3:["⚠️","Dangerous conditions"],
+  4:["🌧️","Rain"],5:["🧊","Ice"],6:["🐌","Traffic jam"],7:["🚧","Lane closed"],
+  8:["⛔","Road closed"],9:["🚧","Roadworks"],10:["💨","Wind"],11:["🌊","Flooding"],
+  14:["🔧","Broken-down vehicle"]
+};
+function incIcon(cat){
+  const e=(INC[cat]||INC[0])[0];
+  return L.divIcon({className:"",iconSize:[30,30],
+    html:`<div style="width:28px;height:28px;border-radius:50%;background:#131C2E;border:2px solid #EF4444;display:grid;place-items:center;font-size:15px;box-shadow:0 2px 8px rgba(0,0,0,.5)">${e}</div>`});
+}
+let incFetchT;
+function scheduleIncidents(){ if(!incOn)return; clearTimeout(incFetchT); incFetchT=setTimeout(fetchIncidents,400); }
+async function fetchIncidents(){
+  if(!incOn||!KEY)return;
+  const b=map.getBounds();
+  const bbox=`${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+  const fields=encodeURIComponent("{incidents{type,geometry{type,coordinates},properties{iconCategory,events{description}}}}");
+  const url=`https://api.tomtom.com/traffic/services/5/incidentDetails?key=${encodeURIComponent(KEY)}&bbox=${bbox}&fields=${fields}&language=en-GB&timeValidityFilter=present`;
+  const id=++incReq;
+  try{
+    const r=await fetch(url);
+    if(!r.ok)return;
+    const d=await r.json();
+    if(id!==incReq||!incOn)return;
+    if(incLayer)incLayer.clearLayers();else incLayer=L.layerGroup().addTo(map);
+    (d.incidents||[]).forEach(it=>{
+      const g=it.geometry;if(!g||!g.coordinates)return;
+      let lat,lon;
+      if(g.type==="Point"){lon=g.coordinates[0];lat=g.coordinates[1];}
+      else if(g.type==="LineString"){const c=g.coordinates[Math.floor(g.coordinates.length/2)];lon=c[0];lat=c[1];}
+      else return;
+      const pr=it.properties||{};
+      const cat=pr.iconCategory||0;
+      const label=(INC[cat]||INC[0])[1];
+      const desc=(pr.events&&pr.events[0]&&pr.events[0].description)||label;
+      L.marker([lat,lon],{icon:incIcon(cat)}).bindPopup(`<b>${label}</b><br>${desc}`).addTo(incLayer);
+    });
+  }catch(e){}
+}
+
 let searchT;
 const q=document.getElementById("q"), results=document.getElementById("results");
 q.addEventListener("input",()=>{
@@ -313,11 +364,25 @@ async function doSearch(v){
 
 document.getElementById("tFlow").onclick=function(){
   flowOn=!flowOn;this.classList.toggle("on",flowOn);
-  if(flowOn)flowLayer.addTo(map);else map.removeLayer(flowLayer);
+  if(flowOn){flowLayer.addTo(map);refreshFlow();}else map.removeLayer(flowLayer);
+};
+document.getElementById("tInc").onclick=function(){
+  incOn=!incOn;this.classList.toggle("on",incOn);
+  if(incOn){toast("Loading incidents…");fetchIncidents();}
+  else if(incLayer)incLayer.clearLayers();
 };
 document.getElementById("tAlt").onclick=function(){
   showAlt=!showAlt;this.classList.toggle("on",showAlt);if(dest)recalc();
 };
+map.on("moveend",scheduleIncidents);
+
+async function reqWake(){
+  if(!("wakeLock" in navigator))return;
+  try{ wakeLock=await navigator.wakeLock.request("screen"); }catch(e){}
+}
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible")reqWake(); });
+
+setInterval(()=>{ refreshFlow(); if(incOn)fetchIncidents(); },120000);
 
 const sheet=document.getElementById("sheet");
 function openSheet(){document.getElementById("keyInput").value=KEY;sheet.classList.add("show");}
@@ -327,11 +392,12 @@ document.getElementById("keySave").onclick=()=>{
   const v=document.getElementById("keyInput").value.trim();
   if(!v){toast("Enter a key");return;}
   KEY=v;localStorage.setItem(KEY_STORE,v);sheet.classList.remove("show");
-  buildLayers();toast("Key saved");if(dest)recalc();
+  buildLayers();reqWake();toast("Key saved");if(dest)recalc();if(incOn)fetchIncidents();
 };
 
 if(!KEY)openSheet();
 buildLayers();
+reqWake();
 </script>
 </body>
 </html>
