@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0B1220">
+<title>Radius — live traffic around you</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+:root{
+  --bg:#0B1220; --panel:#131C2E; --panel2:#0F1726; --line:#1E2A42;
+  --txt:#E6EDF7; --mut:#8597B4; --accent:#38BDF8;
+  --good:#22C55E; --mod:#F5A623; --heavy:#EF4444; --severe:#991B1B;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+  font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+#map{position:absolute;inset:0;background:var(--bg)}
+.leaflet-container{background:var(--bg)}
+
+.hud{position:absolute;top:0;left:0;right:0;z-index:600;
+  padding:calc(env(safe-area-inset-top) + 10px) 12px 0;pointer-events:none}
+.cluster{pointer-events:auto;background:linear-gradient(180deg,var(--panel),var(--panel2));
+  border:1px solid var(--line);border-radius:16px;padding:12px 14px;
+  box-shadow:0 12px 30px rgba(0,0,0,.45);backdrop-filter:blur(8px)}
+.eta-row{display:flex;align-items:baseline;gap:12px}
+.eta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:38px;
+  font-weight:700;letter-spacing:-1px;font-variant-numeric:tabular-nums;line-height:1}
+.eta small{font-size:15px;color:var(--mut);font-weight:600;margin-left:2px}
+.delay{font-family:ui-monospace,monospace;font-weight:700;font-size:15px;
+  padding:3px 9px;border-radius:999px;font-variant-numeric:tabular-nums}
+.delay.ok{color:var(--good);background:rgba(34,197,94,.12)}
+.delay.bad{color:var(--heavy);background:rgba(239,68,68,.12)}
+.dest{color:var(--mut);font-size:13px;margin-top:6px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:78vw}
+.idle{color:var(--mut);font-size:14px;font-weight:600}
+
+.search{pointer-events:auto;margin-top:10px;position:relative}
+.search input{width:100%;border:1px solid var(--line);background:var(--panel2);
+  color:var(--txt);font-size:15px;padding:13px 14px;border-radius:14px;outline:none}
+.search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,.18)}
+.search input::placeholder{color:var(--mut)}
+.results{position:absolute;top:54px;left:0;right:0;background:var(--panel);
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;display:none}
+.results.show{display:block}
+.results button{display:block;width:100%;text-align:left;background:none;border:0;
+  color:var(--txt);padding:12px 14px;font-size:14px;border-bottom:1px solid var(--line);cursor:pointer}
+.results button:last-child{border-bottom:0}
+.results button:hover,.results button:focus{background:var(--panel2);outline:none}
+.results .sub{color:var(--mut);font-size:12px;margin-top:2px}
+
+.dash{position:absolute;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 12px);
+  z-index:600;display:flex;flex-direction:column;gap:10px}
+.rad{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
+  border-radius:16px;padding:12px 14px;box-shadow:0 12px 30px rgba(0,0,0,.45);backdrop-filter:blur(8px)}
+.rad-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.rad-top span{font-size:13px;color:var(--mut);font-weight:600}
+.rad-top b{font-family:ui-monospace,monospace;font-size:15px;color:var(--accent)}
+input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:999px;
+  background:linear-gradient(90deg,var(--accent),#1E2A42);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;
+  border-radius:50%;background:#fff;border:4px solid var(--accent);cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.5)}
+input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
+  background:#fff;border:4px solid var(--accent);cursor:pointer}
+
+.legend{display:flex;gap:14px;justify-content:center;font-size:11px;color:var(--mut)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+
+.fab{position:absolute;right:14px;z-index:600;width:52px;height:52px;border-radius:50%;
+  border:1px solid var(--line);background:var(--panel);color:var(--txt);font-size:22px;
+  display:grid;place-items:center;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.5)}
+.fab:active{transform:scale(.94)}
+.fab.loc{bottom:calc(env(safe-area-inset-bottom) + 150px)}
+.fab.gear{top:calc(env(safe-area-inset-top) + 14px);right:14px}
+.fab.clear{bottom:calc(env(safe-area-inset-bottom) + 210px);font-size:18px;display:none}
+.fab.clear.show{display:grid}
+
+.toggles{position:absolute;left:14px;z-index:600;bottom:calc(env(safe-area-inset-bottom) + 150px);
+  display:flex;flex-direction:column;gap:8px}
+.chip{border:1px solid var(--line);background:var(--panel);color:var(--mut);font-size:12px;
+  font-weight:600;padding:9px 12px;border-radius:999px;cursor:pointer}
+.chip.on{color:#06121f;background:var(--accent);border-color:var(--accent)}
+
+.sheet{position:absolute;inset:0;z-index:900;background:rgba(5,9,16,.82);
+  display:none;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px)}
+.sheet.show{display:flex}
+.card{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--line);
+  border-radius:20px;padding:22px}
+.card h2{margin:0 0 4px;font-size:19px}
+.card p{color:var(--mut);font-size:13px;line-height:1.5;margin:0 0 14px}
+.card label{font-size:12px;color:var(--mut);font-weight:600;display:block;margin-bottom:6px}
+.card input{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+  padding:13px;border-radius:12px;font-size:14px;outline:none;font-family:ui-monospace,monospace}
+.card input:focus{border-color:var(--accent)}
+.warn{background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.3);color:#F5C97A;
+  font-size:12px;line-height:1.5;padding:11px 12px;border-radius:12px;margin:14px 0}
+.card .row{display:flex;gap:10px;margin-top:16px}
+.btn{flex:1;border:0;border-radius:12px;padding:14px;font-size:15px;font-weight:700;cursor:pointer}
+.btn.primary{background:var(--accent);color:#06121f}
+.btn.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
+.toast{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 290px);
+  z-index:700;background:#1b2740;border:1px solid var(--line);color:var(--txt);font-size:13px;
+  padding:10px 16px;border-radius:999px;opacity:0;transition:opacity .25s;pointer-events:none}
+.toast.show{opacity:1}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="hud">
+  <div class="cluster" id="cluster">
+    <div class="idle" id="idleMsg">Search a destination or tap the map to set one.</div>
+    <div class="eta-row" id="etaRow" style="display:none">
+      <div class="eta"><span id="etaMin">–</span><small>min</small></div>
+      <div class="delay ok" id="delayPill">on time</div>
+    </div>
+    <div class="dest" id="destLabel" style="display:none"></div>
+  </div>
+  <div class="search">
+    <input id="q" type="search" placeholder="Where to?" autocomplete="off" enterkeyhint="search">
+    <div class="results" id="results"></div>
+  </div>
+</div>
+
+<button class="fab gear" id="gear" aria-label="Settings">⚙</button>
+<button class="fab loc" id="recenter" aria-label="Recenter on me">◎</button>
+<button class="fab clear" id="clearBtn" aria-label="Clear route">✕</button>
+
+<div class="toggles">
+  <button class="chip on" id="tFlow">Flow</button>
+  <button class="chip" id="tAlt">Alt routes</button>
+</div>
+
+<div class="dash">
+  <div class="rad">
+    <div class="rad-top"><span>Radius around me</span><b id="radVal">5 km</b></div>
+    <input type="range" id="radius" min="1" max="25" value="5" step="1">
+  </div>
+  <div class="rad legend">
+    <span><i style="background:var(--good)"></i>Flowing</span>
+    <span><i style="background:var(--mod)"></i>Slow</span>
+    <span><i style="background:var(--heavy)"></i>Heavy</span>
+    <span><i style="background:var(--severe)"></i>Standstill</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="sheet" id="sheet">
+  <div class="card">
+    <h2>TomTom API key</h2>
+    <p>This app runs on your own TomTom key (free tier). Get one at developer.tomtom.com, then paste it below.</p>
+    <label>API key</label>
+    <input id="keyInput" type="text" placeholder="paste key" spellcheck="false">
+    <div class="warn">⚠ Before going live: in the TomTom dashboard, restrict this key to your own domain (e.g. your GitHub Pages URL). The key sits in the page source, so domain-locking is what stops anyone reusing it.</div>
+    <div class="row">
+      <button class="btn ghost" id="keyCancel">Cancel</button>
+      <button class="btn primary" id="keySave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const KEY_STORE="tomtom_key";
+let KEY=localStorage.getItem(KEY_STORE)||"";
+let me=null, meMarker=null, accCircle=null, radCircle=null;
+let destMarker=null, dest=null, routeLayers=[], flowLayer=null, showAlt=false, flowOn=true;
+let firstFix=true, routeReq=0;
+
+const map=L.map("map",{zoomControl:false,attributionControl:false}).setView([-29.85,31.02],12);
+let baseLayer, incidents=null;
+
+function tt(url){return url.replace("{key}",encodeURIComponent(KEY));}
+function buildLayers(){
+  if(baseLayer) map.removeLayer(baseLayer);
+  baseLayer=L.tileLayer(tt("https://api.tomtom.com/map/1/tile/basic/night/{z}/{x}/{y}.png?key={key}"),
+    {maxZoom:20,detectRetina:true}).addTo(map);
+  if(flowLayer) map.removeLayer(flowLayer);
+  flowLayer=L.tileLayer(tt("https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key={key}"),
+    {maxZoom:20,opacity:.95});
+  if(flowOn) flowLayer.addTo(map);
+}
+
+function toast(m){const t=document.getElementById("toast");t.textContent=m;t.classList.add("show");
+  clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2200);}
+
+function meIcon(){return L.divIcon({className:"",iconSize:[22,22],
+  html:'<div style="width:18px;height:18px;border-radius:50%;background:#38BDF8;border:3px solid #fff;box-shadow:0 0 0 6px rgba(56,189,248,.25)"></div>'});}
+function destIcon(){return L.divIcon({className:"",iconSize:[30,30],
+  html:'<div style="width:14px;height:14px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#fff;border:3px solid #38BDF8;margin:4px"></div>'});}
+
+function setRadius(km){
+  document.getElementById("radVal").textContent=km+" km";
+  if(!me)return;
+  if(radCircle) radCircle.setRadius(km*1000).setLatLng(me);
+  else radCircle=L.circle(me,{radius:km*1000,color:"#38BDF8",weight:1.5,
+    fillColor:"#38BDF8",fillOpacity:.04,dashArray:"6 6"}).addTo(map);
+}
+
+navigator.geolocation.watchPosition(p=>{
+  me=[p.coords.latitude,p.coords.longitude];
+  if(meMarker) meMarker.setLatLng(me); else meMarker=L.marker(me,{icon:meIcon(),zIndexOffset:1000}).addTo(map);
+  const acc=p.coords.accuracy||30;
+  if(accCircle) accCircle.setLatLng(me).setRadius(acc);
+  else accCircle=L.circle(me,{radius:acc,color:"#38BDF8",weight:0,fillColor:"#38BDF8",fillOpacity:.08}).addTo(map);
+  setRadius(+document.getElementById("radius").value);
+  if(firstFix){firstFix=false;map.setView(me,14);}
+  if(dest) recalc();
+},err=>toast("Location blocked — enable GPS"),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
+
+document.getElementById("radius").addEventListener("input",e=>setRadius(+e.target.value));
+document.getElementById("recenter").onclick=()=>{if(me)map.setView(me,15);else toast("Waiting for GPS…");};
+
+map.on("click",e=>setDest([e.latlng.lat,e.latlng.lng],"Dropped pin"));
+
+function setDest(ll,label){
+  dest=ll;
+  if(destMarker) destMarker.setLatLng(ll); else destMarker=L.marker(ll,{icon:destIcon()}).addTo(map);
+  document.getElementById("destLabel").style.display="block";
+  document.getElementById("destLabel").textContent=label||"Destination";
+  document.getElementById("clearBtn").classList.add("show");
+  recalc();
+}
+
+function clearRoute(){
+  dest=null;
+  routeLayers.forEach(l=>map.removeLayer(l));routeLayers=[];
+  if(destMarker){map.removeLayer(destMarker);destMarker=null;}
+  document.getElementById("etaRow").style.display="none";
+  document.getElementById("destLabel").style.display="none";
+  document.getElementById("idleMsg").style.display="block";
+  document.getElementById("clearBtn").classList.remove("show");
+}
+document.getElementById("clearBtn").onclick=clearRoute;
+
+const delayColor=m=>m>=4?"#991B1B":m>=3?"#EF4444":m>=2?"#F5A623":"#22C55E";
+
+async function recalc(){
+  if(!me||!dest||!KEY)return;
+  const id=++routeReq;
+  routeLayers.forEach(l=>map.removeLayer(l));routeLayers=[];
+  const alt=showAlt?2:0;
+  const url=`https://api.tomtom.com/routing/1/calculateRoute/${me[0]},${me[1]}:${dest[0]},${dest[1]}/json`
+    +`?key=${encodeURIComponent(KEY)}&traffic=true&maxAlternatives=${alt}&sectionType=traffic&travelMode=car`;
+  try{
+    const r=await fetch(url);
+    if(!r.ok){toast(r.status===403?"Key rejected — check it":"Routing error "+r.status);return;}
+    const d=await r.json();
+    if(id!==routeReq||!d.routes||!d.routes.length)return;
+    d.routes.forEach((rt,i)=>{
+      const pts=[];rt.legs.forEach(lg=>lg.points.forEach(pt=>pts.push([pt.latitude,pt.longitude])));
+      if(i>0){routeLayers.push(L.polyline(pts,{color:"#5B6B8C",weight:5,opacity:.5}).addTo(map));return;}
+      routeLayers.push(L.polyline(pts,{color:"#22C55E",weight:7,opacity:.95}).addTo(map));
+      (rt.sections||[]).forEach(s=>{
+        if(s.sectionType!=="TRAFFIC"||s.magnitudeOfDelay<2)return;
+        const seg=pts.slice(s.startPointIndex,s.endPointIndex+1);
+        if(seg.length>1)routeLayers.push(L.polyline(seg,{color:delayColor(s.magnitudeOfDelay),weight:7,opacity:1}).addTo(map));
+      });
+      const sec=rt.summary.travelTimeInSeconds, delay=rt.summary.trafficDelayInSeconds||0;
+      document.getElementById("idleMsg").style.display="none";
+      document.getElementById("etaRow").style.display="flex";
+      document.getElementById("etaMin").textContent=Math.max(1,Math.round(sec/60));
+      const pill=document.getElementById("delayPill");
+      if(delay>=60){pill.className="delay bad";pill.textContent="+"+Math.round(delay/60)+" min traffic";}
+      else{pill.className="delay ok";pill.textContent="clear";}
+    });
+    if(id===routeReq){
+      const all=routeLayers.filter(l=>l.getBounds);
+      if(all.length)map.fitBounds(L.featureGroup(all).getBounds().pad(.18));
+    }
+  }catch(e){toast("Network error");}
+}
+
+let searchT;
+const q=document.getElementById("q"), results=document.getElementById("results");
+q.addEventListener("input",()=>{
+  clearTimeout(searchT);const v=q.value.trim();
+  if(v.length<3){results.classList.remove("show");return;}
+  searchT=setTimeout(()=>doSearch(v),350);
+});
+async function doSearch(v){
+  if(!KEY){openSheet();return;}
+  const bias=me?`&lat=${me[0]}&lon=${me[1]}`:"";
+  try{
+    const r=await fetch(`https://api.tomtom.com/search/2/search/${encodeURIComponent(v)}.json?key=${encodeURIComponent(KEY)}&limit=5&countrySet=ZA${bias}`);
+    const d=await r.json();
+    results.innerHTML="";
+    (d.results||[]).forEach(it=>{
+      const b=document.createElement("button");
+      const name=it.poi?it.poi.name:(it.address.freeformAddress||"Location");
+      b.innerHTML=`<div>${name}</div><div class="sub">${it.address.freeformAddress||""}</div>`;
+      b.onclick=()=>{setDest([it.position.lat,it.position.lon],name);
+        results.classList.remove("show");q.value=name;q.blur();};
+      results.appendChild(b);
+    });
+    results.classList.toggle("show",!!(d.results&&d.results.length));
+  }catch(e){toast("Search failed");}
+}
+
+document.getElementById("tFlow").onclick=function(){
+  flowOn=!flowOn;this.classList.toggle("on",flowOn);
+  if(flowOn)flowLayer.addTo(map);else map.removeLayer(flowLayer);
+};
+document.getElementById("tAlt").onclick=function(){
+  showAlt=!showAlt;this.classList.toggle("on",showAlt);if(dest)recalc();
+};
+
+const sheet=document.getElementById("sheet");
+function openSheet(){document.getElementById("keyInput").value=KEY;sheet.classList.add("show");}
+document.getElementById("gear").onclick=openSheet;
+document.getElementById("keyCancel").onclick=()=>sheet.classList.remove("show");
+document.getElementById("keySave").onclick=()=>{
+  const v=document.getElementById("keyInput").value.trim();
+  if(!v){toast("Enter a key");return;}
+  KEY=v;localStorage.setItem(KEY_STORE,v);sheet.classList.remove("show");
+  buildLayers();toast("Key saved");if(dest)recalc();
+};
+
+if(!KEY)openSheet();
+buildLayers();
+</script>
+</body>
+</html>
